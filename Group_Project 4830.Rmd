@@ -1,0 +1,613 @@
+---
+title: "Group Project_4830"
+output: html_document
+date: "2024-11-11"
+---
+
+```{r}
+#Load libraries
+library(tidyverse)
+library(kableExtra)
+library(rsample)
+library(recipes)
+library(parsnip)
+library(yardstick)
+library(viridisLite)
+library(GGally)
+```
+
+```{r}
+Heart<-read.csv("processed.cleveland.data")
+
+#View(Heart)
+```
+
+```{r}
+names <- c("Age",
+           "Sex",
+           "Chest_Pain_Type",
+           "Resting_Blood_Pressure",
+           "Serum_Cholesterol",
+           "Fasting_Blood_Sugar",
+           "Resting_ECG",
+           "Max_Heart_Rate_Achieved",
+           "Exercise_Induced_Angina",
+           "ST_Depression_Exercise",
+           "Peak_Exercise_ST_Segment",
+           "Num_Major_Vessels_Flouro",
+           "Thalassemia",
+           "Diagnosis_Heart_Disease")
+```
+
+```{r}
+head(Heart)
+```
+
+```{r}
+table(Heart$Thalassemia)
+```
+
+```{r}
+colnames(Heart) <- names
+View(Heart)
+```
+
+```{r}
+nrow(Heart)
+```
+
+```{r}
+missing_values <- sapply(Heart, function(x) sum(is.na(x)))
+
+print(missing_values)
+```
+
+```{r}
+Heart[Heart == '?'] <- NA
+View(Heart)
+```
+
+```{r}
+missing_values <- sapply(Heart, function(x) sum(is.na(x)))
+
+print(missing_values)
+```
+
+```{r}
+Heart <- na.omit(Heart)
+nrow(Heart)
+```
+
+```{r}
+
+#Determine the number of values in each level of dependent variable
+Heart %>% 
+  drop_na() %>%
+  group_by(Diagnosis_Heart_Disease) %>%
+  count() %>% 
+  ungroup() %>%
+  kable(align = rep("c", 2)) %>% kable_styling("full_width" = F)
+```
+
+Since any value above 0 in ‘Diagnosis_Heart_Disease’ (column 14) indicates the presence of heart disease, we can lump all levels \> 0 together so the classification predictions are binary – Yes or No (1 or 0).
+
+```{r}
+Heart$Diagnosis_Heart_Disease <- ifelse(Heart$Diagnosis_Heart_Disease > 0, 1, 0)
+
+head(Heart)
+```
+
+```{r}
+#table(Heart)
+```
+
+The categorical variables have different levels, mapping the same into a categorical data subset.
+
+```{r}
+
+library(dplyr)
+categorical_data <- Heart %>% 
+  mutate(Sex = if_else(Sex == 1, "MALE", "FEMALE"),
+         Exercise_Induced_Angina = if_else(Exercise_Induced_Angina == 1, "YES" ,"NO"),
+         Chest_Pain_Type = if_else(Chest_Pain_Type == 1, "TYPICAL ANGINA",
+                      if_else(Chest_Pain_Type == 2, "ATYPICAL ANGINA",
+                      if_else(Chest_Pain_Type == 3, "NON-ANGINAL PAIN","ASYMPTOMATIC"))),
+         Resting_ECG = if_else(Resting_ECG == 0, "NORMAL",
+                           if_else(Resting_ECG == 1, "ABNORMALITY", "PROBABLE OR DEFINITE")),
+         Num_Major_Vessels_Flouro = as.factor(Num_Major_Vessels_Flouro),
+         Thalassemia = as.factor(Thalassemia),
+         Diagnosis_Heart_Disease = if_else(Diagnosis_Heart_Disease == 1, "YES", "NO")
+         ) %>% 
+  mutate_if(is.character, as.factor) %>% 
+  dplyr::select(Diagnosis_Heart_Disease, Sex, Exercise_Induced_Angina, Chest_Pain_Type, Resting_ECG, Num_Major_Vessels_Flouro, Thalassemia)
+```
+
+```{r}
+summary(categorical_data)
+```
+#### Pie chart for gender 
+
+```{r}
+gender_summary <- as.data.frame(table(categorical_data$Sex))
+colnames(gender_summary) <- c("Gender", "Count")
+# Calculate percentages
+gender_summary$Percentage <- round(gender_summary$Count / sum(gender_summary$Count) * 100, 1)
+
+gender_summary = as.data.frame(gender_summary)
+ggplot(gender_summary, aes(x = "", y = Count, fill = Gender)) +
+  geom_bar(stat = "identity", width = 1) + # Bar chart for pie slices
+  coord_polar(theta = "y" ,start = 0, direction = -1) + # Convert to pie chart
+  geom_text(
+    aes(
+      y = cumsum(Count) - Count / 2, 
+      label = paste0(Percentage, "%"),
+      
+    ),
+    color = "white",
+    position = position_stack(vjust = 0.5)
+  ) +
+  labs(
+    title = "Gender Distribution",
+    x = NULL,
+    y = NULL
+  ) +
+  theme_void() + # Clean chart
+  theme(legend.position = "right")
+```
+Since the data for male is overrepresented the model will have a better predictive power for that.
+
+#### Pie chart for Heart Diagnosis
+
+```{r}
+diagnosis_summary <- as.data.frame(table(categorical_data$Diagnosis_Heart_Disease))
+colnames(diagnosis_summary) <- c("Diagnosis", "Count")
+
+# Calculate percentages
+diagnosis_summary$Percentage <- round(diagnosis_summary$Count / sum(diagnosis_summary$Count) * 100, 1)
+
+ggplot(diagnosis_summary, aes(x = "", y = Count, fill = Diagnosis)) +
+  geom_bar(stat = "identity", width = 1) + # Bar chart for pie slices
+  coord_polar(theta = "y", start = 0, direction = -1) + # Convert to pie chart
+  geom_text(
+    aes(
+      y = cumsum(Count) - Count / 2, 
+      label = paste0(Percentage, "%")
+    ),
+    color = "white",
+    position = position_stack(vjust = 0.5)
+  ) +
+  labs(
+    title = "Heart Diagnosis Distribution",
+    x = NULL,
+    y = NULL
+  ) +
+  theme_void() + # Clean chart
+  theme(legend.position = "right")
+```
+Class imbalance therefore we can expect reduced sensitivity for detecting heart disease cases (false negatives).
+
+```{r}
+ggplot(categorical_data, aes(x = "", fill = Sex)) +
+  geom_bar(stat= "count", width = 1) +
+  coord_polar("y", start = 0, direction = -1) +
+  geom_text(aes(label = scales::percent(..count.. / sum(..count..))), stat = "count", position = position_stack(vjust = .5)) +
+  
+   labs(
+    title = "Gender Distribution",
+    x = NULL,
+    y = NULL
+  )
+  theme_void()
+```
+
+
+```{r}
+
+ggplot(categorical_data, aes(x = "", fill = Diagnosis_Heart_Disease)) +
+  geom_bar(stat= "count", width = 1) +
+  coord_polar("y", start = 0, direction = -1) +
+  geom_text(aes(label = scales::percent(..count.. / sum(..count..))), stat = "count", position = position_stack(vjust = .5)) +
+  
+   labs(
+    title = "Heart Diagnosis Distribution",
+    x = NULL,
+    y = NULL
+  )
+  theme_void()
+```
+
+####Distribution of the categorical data.
+```{r}
+for (pair in colnames(categorical_data)) {
+  
+  tbl <- with(categorical_data, table(categorical_data[['Sex']], categorical_data[[pair]]))
+  
+  barplot(tbl, beside = TRUE, 
+          col = c("skyblue", "salmon"), 
+          main = paste("Comparison of", pair, "by", 'Sex'), 
+          xlab = 'Sex', 
+          ylab = "Count")
+  
+  legend("topright", legend = c('Female','Male'), fill = c("skyblue", "salmon"))
+  }
+```
+
+In the dataset, the number of males are more than female around 200 patients are male and around 100 is only female.
+
+```{r}
+for (pair in colnames(categorical_data)) {
+  
+  tbl <- with(categorical_data, table(categorical_data[['Diagnosis_Heart_Disease']], categorical_data[[pair]]))
+  
+  barplot(tbl, beside = TRUE, 
+          col = c("skyblue", "salmon"), 
+          main = paste("Comparison of", pair, "by", 'Diagnosis'), 
+          xlab = pair, 
+          ylab = "Count", cex.names = 0.8)
+  
+  legend("topright", legend = c('No','Yes'), fill = c("skyblue", "salmon"))
+  }
+```
+
+#### Density plots of the numerical variables.
+
+```{r}
+# Loop through each numerical variable for density plots
+numerical_var = c('ST_Depression_Exercise','Age','Max_Heart_Rate_Achieved','Serum_Cholesterol','Resting_Blood_Pressure')
+for (var in numerical_var) {
+  p <- ggplot(Heart, aes_string(x = var, color = "factor(Diagnosis_Heart_Disease)")) +
+    geom_density(alpha = 0.6, size = 1) +
+    labs(title = paste("Density of", var, "by Heart Disease Diagnosis"),
+         x = var,
+         y = "Density",
+         color = "Heart Disease") +
+    theme_minimal()
+    print(p)
+}
+```
+
+#### Boxplot
+
+```{r}
+numerical_data = Heart[numerical_var]
+boxplot(numerical_data, cex.axis=0.5)
+```
+
+```{r}
+for (var in numerical_var) {
+  p <- ggplot(Heart, aes_string(x = as.factor(categorical_data$Sex), y = var, fill = as.factor(Heart$Sex))) +
+    geom_boxplot(outlier.color = "red", outlier.shape = 16) +
+    labs(title = paste("Boxplot of", var, "by Gender"),
+         x = "Gender",
+         y = var) +
+    theme_minimal()
+    print(p)
+}
+
+```
+
+```{r}
+hist(numerical_data$Age)
+```
+
+```{r}
+for (var in numerical_var) {
+  p <- ggplot(Heart, aes_string(x = as.factor(categorical_data$Diagnosis_Heart_Disease), y = var, fill = as.factor(Heart$Diagnosis_Heart_Disease))) +
+    geom_boxplot(outlier.color = "red", outlier.shape = 16) +
+    labs(title = paste("Boxplot of", var, "by Heart Disease Diagnosis"),
+         x = "Heart Diagnosis",
+         y = var) +
+    theme_minimal()
+    print(p)
+}
+```
+
+```{r}
+for (var in numerical_var) {
+  p <- ggplot(Heart, aes_string(x = as.factor(categorical_data$Chest_Pain_Type), y = var, fill = as.factor(categorical_data$Chest_Pain_Type))) +
+    geom_boxplot(outlier.color = "red", outlier.shape = 16) +
+    labs(title = paste("Boxplot of", var, "by Chest_Pain_Type"),
+         x = "Chest_Pain_Type",
+         y = var) +
+    theme_minimal() + 
+    theme(axis.text.x = element_text(face="bold", color="#993333", 
+                           size=8, angle=45))
+    print(p)
+}
+```
+
+Scatterplot
+
+```{r}
+pairs(numerical_data)
+```
+
+#### Correlation
+
+```{r}
+library(corrplot)
+
+#Using the cor function to find the correlation between the variables
+cor_data = cor(numerical_data)
+ 
+print("Correlation matrix")
+print(cor_data)
+```
+
+```{r}
+#correlation matrix 
+corrplot(cor_data, method="number", cl.cex = 0.5, tl.col = "blue", tl.cex = 0.5)
+```
+
+##### Getting the numerical variables from the data + scaling
+
+```{r}
+heart_numerical <- scale(numerical_data)
+```
+
+### PCA
+
+```{r}
+heart.pca <- prcomp(heart_numerical)
+
+#Eigen vectors or weights
+
+heart.pca
+```
+
+```{r}
+library(factoextra)
+fviz_eig(heart.pca)  ## use the function on the pca object
+```
+
+Screeplot tells 2 principal components.
+
+```{r}
+library(factoextra)
+fviz_pca_biplot(heart.pca, repel = TRUE,
+                col.var = "steelblue", # Variables color
+                col.ind = "coral")
+```
+
+```{r}
+fviz_pca_var(heart.pca, col.var = "blue")
+```
+
+```{r}
+#pca loadings
+pca_loadings <- heart.pca$rotation
+head(pca_loadings)
+```
+
+```{r}
+#PCA scores
+pca_scores <- heart.pca$x
+head(pca_scores)
+
+```
+
+```{r}
+#eigen values
+eval <- (heart.pca$sdev)^2
+eval
+```
+
+Kaiser Criterion
+
+```{r}
+sum(eval > mean(eval))
+```
+
+```{r}
+percent_val <- eval/sum(eval)*100
+
+percent_val
+```
+
+```{r}
+cumsum(percent_val)
+```
+
+```{r}
+cumulative_variance <- cumsum(percent_val)
+
+# Create a data frame for the plot
+df_variance <- data.frame(
+  Component = 1:length(cumulative_variance),
+  CumulativeVariance = cumulative_variance
+)
+
+# Plot cumulative percentage variance against component index
+ggplot(df_variance, aes(x = Component, y = CumulativeVariance)) +
+  geom_line(color = "blue") +
+  geom_point(color = "red") +
+  labs(title = "Cumulative Percentage Variance vs Principal Component Index",
+       x = "Principal Component Index",
+       y = "Cumulative Percentage Variance (%)") +
+  theme_minimal()
+```
+
+Cumsum method / 80-90% rule tells 4 principal components
+
+```{r}
+sub_dat <- as.data.frame(heart.pca$x[, 1:2])
+
+plot(sub_dat$PC1, sub_dat$PC2, col = "blue",
+     xlab = "PC1", ylab = "PC2", pch =18
+)
+```
+
+```{r}
+table(Heart$Diagnosis_Heart_Disease)
+```
+
+```{r}
+pca_df <- data.frame(heart.pca$x[,1:2], heart = Heart$Diagnosis_Heart_Disease)
+
+ggplot(pca_df, aes(PC1, PC2, color = heart)) + 
+  geom_point(size = 3) + 
+  labs(title = "PCA - Heart_Diagnosis", x = "PC1", y = "PC2") +
+  theme_minimal()
+```
+
+```{r}
+pca_df2 <- data.frame(heart.pca$x[,4:5], heart = Heart$Diagnosis_Heart_Disease)
+ggplot(pca_df2, aes(PC4, PC5, color = heart)) + 
+  geom_point(size = 3) + 
+  labs(title = "PCA - Heart_Diagnosis", x = "PC1", y = "PC2") +
+  theme_minimal()
+```
+
+```{r}
+library(scatterplot3d)
+
+# Assuming pca_data contains PC1, PC2, PC3 from PCA
+pca3_data <- as.data.frame(heart.pca$x[, 1:3])  # Extract first 3 PCs
+pca3_data$Diagnosis <- as.factor(Heart$Diagnosis_Heart_Disease)  # Add target variable
+
+# Create the 3D scatterplot
+scatterplot3d(pca_data$PC1, pca_data$PC2, pca_data$PC3,
+              color = ifelse(pca_data$Diagnosis == 1, "red", "blue"),
+              pch = 19,            # Solid circles
+              xlab = "PC1",        # Label for X-axis
+              ylab = "PC2",        # Label for Y-axis
+              zlab = "PC3",        # Label for Z-axis
+              main = "3D Scatterplot of PC1, PC2, PC3")
+legend = c('Diagnosed','Not Diagnosed')
+
+```
+
+```{r}
+library(scatterplot3d)
+
+# Assuming pca_data contains PC1, PC2, PC3 from PCA
+pca3_data <- as.data.frame(heart.pca$x[, 1:4])  # Extract first 3 PCs
+pca3_data$Diagnosis <- as.factor(Heart$Diagnosis_Heart_Disease)  # Add target variable
+
+# Create the 3D scatterplot
+scatterplot3d(pca_data$PC1, pca_data$PC2, pca_data$PC4,
+              color = ifelse(pca_data$Diagnosis == 1, "red", "blue"),
+              pch = 19,            # Solid circles
+              xlab = "PC1",        # Label for X-axis
+              ylab = "PC2",        # Label for Y-axis
+              zlab = "PC4",        # Label for Z-axis
+              main = "3D Scatterplot of PC1, PC2, PC3")
+legend = c('Diagnosed','Not Diagnosed')
+```
+
+```{r}
+library(GGally)
+#pca_data <- as.data.frame(pca_result$x)
+#pca_data <- data.frame(heart.pca$x, heart = Heart$Diagnosis_Heart_Disease)
+pca_data <- as.data.frame(heart.pca$x[, 1:5])
+
+# Add the target variable to the PCA-transformed dataset
+pca_data$Diagnosis <- Heart$Diagnosis_Heart_Disease  # Replace 'target' with the actual target variable
+
+# Parallel coordinate plot
+ggparcoord(data = pca_data, 
+           columns = 1:5,         # Select PC1 to PC5
+           groupColumn = "Diagnosis",
+           scale = "globalminmax", 
+           title = "Parallel Coordinate Plot of Principal Components",
+           alphaLines = 0.5) +
+  
+  theme_minimal()
+
+```
+
+#### PCA prediction
+
+```{r}
+idx <- floor(0.8*nrow(Heart)) ### how many points to subset 
+#idx
+train_idx <- sample(1:nrow(Heart), idx) ##subset index for training set
+```
+
+```{r}
+numerical_data$Diagnosis_Heart_Disease = Heart$Diagnosis_Heart_Disease
+  
+heart_train <- numerical_data[train_idx, ] ##subset rows for the train set 
+heart_test <- numerical_data[-train_idx,  ] ##subset rows for the test set
+heart_train
+```
+
+```{r}
+heart_subset <- heart_train[,-6] ### Working on the training data set
+heart_sub.pca <- prcomp(heart_subset, scale=TRUE)
+
+summary(life_sub.pca)
+```
+
+```{r}
+####transform the training variables into pca components using the fitted pca models
+transform_train <- as.data.frame(predict(heart_sub.pca, heart_train))
+head(transform_train)
+```
+
+```{r}
+transform_train$Diagnosis_Heart_Disease = heart_train$Diagnosis_Heart_Disease
+#transform_test = as.data.frame(transform_test)
+head(transform_train)
+```
+
+```{r}
+transform_test <- as.data.frame(predict(heart_sub.pca, heart_test)) ##transform the test variables into pca components using the fitted pca models
+
+head(transform_test)
+```
+
+```{r}
+transform_test$Diagnosis_Heart_Disease = heart_test$Diagnosis_Heart_Disease
+#transform_test = as.data.frame(transform_test)
+head(transform_test)
+```
+
+#### Creating the logistic regression model with the 2 principal components
+
+```{r}
+classifier = glm(formula = Diagnosis_Heart_Disease ~ .,
+                 family = binomial,
+                 data = transform_train[,c('PC1','PC2', 'PC3', 'PC4','Diagnosis_Heart_Disease')])
+summary(classifier)
+```
+
+```{r}
+prob_pred = predict(classifier, type = 'response', newdata = transform_test[-6])
+y_pred = ifelse(prob_pred > 0.5, 1, 0)
+```
+
+```{r}
+cm = table(transform_test[, 6], y_pred)
+cm
+```
+
+```{r}
+# Install and load caret package
+#install.packages("caret")
+library(caret)
+
+# Convert to factors for compatibility
+actual <- factor(heart_test$Diagnosis_Heart_Disease, levels = c(1, 0))  # Set levels explicitly
+predicted <- factor((y_pred), levels = c(1, 0))
+
+# Create confusion matrix
+conf_matrix <- confusionMatrix(predicted, actual, positive = "1")
+
+# Print confusion matrix
+print(conf_matrix)
+
+```
+
+```{r}
+library(pROC)
+
+# Compute ROC curve
+roc_curve <- roc(heart_test$Diagnosis_Heart_Disease, prob_pred)
+
+# Plot the ROC curve
+plot(roc_curve, main = "ROC Curve", legacy.axes = TRUE)
+auc_value <- auc(roc_curve)
+cat("AUC:", auc_value, "\n")
+
+```
